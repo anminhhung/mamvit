@@ -11,6 +11,8 @@ import torch.nn as nn
 from mamvit import MamViT
 from dataloader import load_data
 from utils import colorstr
+from torch.cuda.amp import GradScaler, autocast
+
 
 import logging
 logging.getLogger().setLevel(logging.INFO)
@@ -45,6 +47,7 @@ def train_model(args, model, optimizer, device, num_epochs, dataloaders, path, )
     since = time.time()
     
     criterion = nn.CrossEntropyLoss()
+    scaler = GradScaler()
     
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
     best_val_acc = 0.0
@@ -84,14 +87,18 @@ def train_model(args, model, optimizer, device, num_epochs, dataloaders, path, )
                 
                 optimizer.zero_grad()
                 with torch.set_grad_enabled(phase == "train"):
-                    outputs = model(inputs)
+                    with autocast():  # Enable automatic mixed precision
+                        outputs = model(inputs)
+                    
                     loss = criterion(outputs, labels)
                     
                     _, preds = torch.max(outputs, 1)
                     
                     if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+
 
                 running_items += inputs.size(0)
                 try:
@@ -179,12 +186,24 @@ def experiment(args):
 
     model = MamViT(args, num_classes=num_classes).to(device=device)
     
+    # Apply weight initialization
+    def init_weights(m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight)
+        elif isinstance(m, nn.Embedding):
+            nn.init.normal_(m.weight, mean=0, std=args.d_model ** -0.5)
+    
+    # Apply the weight initialization to the model
+    # model.apply(init_weights)
+    
     # cal #params
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable params: {n_params}")
     
     # define optimizer
-    optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.decay)
+    optimizer = torch.optim.Adam(model.parameters(), args.lr)#, weight_decay=args.decay)
 
     print(args)
     with open(os.path.join(exp_path, 'config.txt'), 'w') as f:
@@ -210,8 +229,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=256, type=int, help="Batch size")
     parser.add_argument("--epochs", default=200, type=int, help="Number of epochs.")
     parser.add_argument("--save_path", default="save_path", type=str, help="Path to save model and results")
-    parser.add_argument("--momentum", default=0.9, type=float)
-    parser.add_argument("--decay", default=0.001, type=float)
+    # parser.add_argument("--momentum", default=0.9, type=float)
+    # parser.add_argument("--decay", default=0.001, type=float)
     parser.add_argument('--gammas', type=float, nargs='+', default=[0.1, 0.1], help='LR is multiplied by gamma on schedule, number of gammas should be equal to schedule')
     parser.add_argument('--schedule', type=int, nargs='+', default=[100, 150], help='Decrease learning rate at these epochs.')
     
@@ -222,11 +241,11 @@ if __name__ == "__main__":
     
     parser.add_argument("--d_model", default=389, type=int)
     parser.add_argument("--d_inner", default=389, type=int)
-    parser.add_argument("--d_conv", default=4, type=int)
-    parser.add_argument("--dt_rank", default=48, type=int)
+    parser.add_argument("--d_conv", default=7, type=int)
+    parser.add_argument("--dt_rank", default=32, type=int)
     parser.add_argument("--d_state", default=16, type=int)
     
-    parser.add_argument("--n_layer", default=6, type=int)
+    parser.add_argument("--n_layer", default=3, type=int)
     parser.add_argument("--bias",  default=False, type=bool)
     parser.add_argument("--conv_bias", default=True, type=bool)
 

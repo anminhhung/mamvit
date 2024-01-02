@@ -43,16 +43,22 @@ class MamViT(nn.Module):
 
         self.head = nn.Linear(args.d_model, num_classes, bias=False)
 
-
     def forward(self, input_ids):
         x = self.embeddings(input_ids)
         
         for layer in self.layers:
             x = layer(x)
             
-        x = self.norm_f(x)
+        x = self.norm_f(x) # torch.Size([32, 65, 512])
         
-        x = x[:,0,:]
+        # print(x.shape)
+        
+        x = F.max_pool1d(x.permute(0, 2, 1), kernel_size=65).squeeze()
+        # x = F.max_pool1d(x, kernel_size=389).squeeze()
+        
+        # x = x[:,0,:]
+        
+        # print(x.shape)
         
         logits = self.head(x)
 
